@@ -1,0 +1,5 @@
+#!/bin/sh
+
+[ -x /usr/lib/parental/firewall-include.sh ] || exit 0
+/usr/lib/parental/firewall-include.sh add
+exit 0

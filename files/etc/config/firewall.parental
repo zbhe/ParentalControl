@@ -1,0 +1,241 @@
+#!/bin/sh
+# /etc/config/firewall.parental
+# 家长控制系统 - 底层 nftables 规则注入脚本
+#
+# 菜单入口
+# /usr/lib/lua/luci/controller/parental.lua
+# CBI 页面文件
+# /usr/lib/lua/luci/model/cbi/parental_script.lua
+# 配置文件
+# /etc/config/parental
+#
+# device.timeslots 格式：
+#   start|stop|weekdays;start|stop|weekdays
+#   weekdays 为英文星期名称，* 表示每天；none 表示没有时段
+
+. /lib/functions.sh
+
+PARENTAL_CHAIN="parental_block"
+
+parental_log() {
+	logger -t parental "$@" 2>/dev/null || true
+}
+
+delete_parental_chain() {
+	nft delete chain inet fw4 "$PARENTAL_CHAIN" 2>/dev/null || true
+}
+
+create_parental_chain() {
+	if ! nft create chain inet fw4 "$PARENTAL_CHAIN" \
+		'{ type filter hook prerouting priority mangle; policy accept; }'; then
+		parental_log "failed to create chain inet fw4 $PARENTAL_CHAIN"
+		return 1
+	fi
+}
+
+normalize_weekdays() {
+	local weekdays="$1"
+	local days
+
+	weekdays=$(printf '%s' "$weekdays" | tr ',' ' ' | tr -s ' ')
+	weekdays=${weekdays# }
+	weekdays=${weekdays% }
+
+	case "$weekdays" in
+		""|"*")
+			printf '%s' "Monday,Tuesday,Wednesday,Thursday,Friday,Saturday,Sunday"
+			;;
+		*)
+			days=$(printf '%s' "$weekdays" | tr ' ' ',')
+			printf '%s' "$days"
+			;;
+	esac
+}
+
+shift_weekdays() {
+	local days="$1"
+	local result=""
+	local day
+	local shifted
+	local IFS=','
+
+	for day in $days; do
+		case "$day" in
+			Monday)    shifted=Tuesday ;;
+			Tuesday)   shifted=Wednesday ;;
+			Wednesday) shifted=Thursday ;;
+			Thursday)  shifted=Friday ;;
+			Friday)    shifted=Saturday ;;
+			Saturday)  shifted=Sunday ;;
+			Sunday)    shifted=Monday ;;
+			*)         shifted="$day" ;;
+		esac
+
+		if [ -n "$result" ]; then
+			result="$result,$shifted"
+		else
+			result="$shifted"
+		fi
+	done
+
+	printf '%s' "$result"
+}
+
+add_rule() {
+	local mac="$1"
+	local start_time="$2"
+	local stop_time="$3"
+	local weekdays="$4"
+
+	if ! nft add rule inet fw4 "$PARENTAL_CHAIN" \
+		ether saddr "$mac" \
+		meta hour "$start_time"-"$stop_time" \
+		meta day { $weekdays } drop; then
+		parental_log "failed to add rule: $mac $start_time-$stop_time $weekdays"
+		return 1
+	fi
+}
+
+time_to_minutes() {
+	local value="$1"
+	local hour="${value%:*}"
+	local minute="${value#*:}"
+
+	hour=${hour#0}
+	minute=${minute#0}
+	[ -n "$hour" ] || hour=0
+	[ -n "$minute" ] || minute=0
+
+	printf '%s' "$((hour * 60 + minute))"
+}
+
+add_slot() {
+	local mac="$1"
+	local start_time="$2"
+	local stop_time="$3"
+	local weekdays="$4"
+	local days
+
+	start_time=$(printf '%s' "$start_time" | tr -d ' ')
+	stop_time=$(printf '%s' "$stop_time" | tr -d ' ')
+
+	if [ -z "$start_time" ] && [ -z "$stop_time" ]; then
+		return 0
+	fi
+
+	case "$start_time" in
+		[01][0-9]:[0-5][0-9]|2[0-3]:[0-5][0-9]) ;;
+		*)
+			parental_log "invalid start time for $mac: $start_time"
+			return
+			;;
+	esac
+
+	case "$stop_time" in
+		[01][0-9]:[0-5][0-9]|2[0-3]:[0-5][0-9]) ;;
+		*)
+			parental_log "invalid stop time for $mac: $stop_time"
+			return
+			;;
+	esac
+
+	if [ "$start_time" = "$stop_time" ]; then
+		parental_log "skip zero-length slot for $mac: $start_time"
+		return
+	fi
+
+	days=$(normalize_weekdays "$weekdays")
+
+	if [ "$(time_to_minutes "$start_time")" -lt "$(time_to_minutes "$stop_time")" ]; then
+		add_rule "$mac" "$start_time" "$stop_time" "$days"
+		return
+	fi
+
+	# 跨午夜：拆成当天开始到 23:59，以及次日 00:00 到结束。
+	add_rule "$mac" "$start_time" "23:59" "$days"
+	add_rule "$mac" "00:00" "$stop_time" "$(shift_weekdays "$days")"
+}
+
+handle_device() {
+	local section="$1"
+	local enable mac timeslots
+	local weekdays start_am stop_am start_pm stop_pm
+
+	config_get_bool enable "$section" enable 0
+	config_get mac "$section" mac ""
+
+	if [ "$enable" -ne 1 ] || [ -z "$mac" ]; then
+		return 0
+	fi
+
+	mac=$(printf '%s' "$mac" | tr 'A-Z' 'a-z')
+	config_get timeslots "$section" timeslots ""
+
+	if [ "$timeslots" = "none" ]; then
+		return 0
+	fi
+
+	if [ -n "$timeslots" ]; then
+		local slot
+		local start_time stop_time days rest
+		local IFS=';'
+
+		for slot in $timeslots; do
+			[ -n "$slot" ] || continue
+
+			start_time=${slot%%|*}
+			rest=${slot#*|}
+			[ "$rest" != "$slot" ] || continue
+
+			stop_time=${rest%%|*}
+			days=${rest#*|}
+			[ "$days" != "$rest" ] || days=""
+
+			start_time=$(printf '%s' "$start_time" | tr -d ' ')
+			stop_time=$(printf '%s' "$stop_time" | tr -d ' ')
+			add_slot "$mac" "$start_time" "$stop_time" "$days"
+		done
+		return 0
+	fi
+
+	# 兼容旧配置：没有 timeslots 时继续读取上午/下午两个固定时段。
+	config_get weekdays "$section" weekdays ""
+	config_get start_am "$section" start_time_am ""
+	config_get stop_am "$section" stop_time_am ""
+	config_get start_pm "$section" start_time_pm ""
+	config_get stop_pm "$section" stop_time_pm ""
+
+	add_slot "$mac" "$start_am" "$stop_am" "$weekdays"
+	add_slot "$mac" "$start_pm" "$stop_pm" "$weekdays"
+}
+
+load_parental_config() {
+	local enabled
+
+	config_get_bool enabled settings enabled 0
+	parental_log "reload requested, enabled=$enabled"
+	if [ "$enabled" -eq 0 ]; then
+		delete_parental_chain
+		return 0
+	fi
+
+	if ! command -v nft >/dev/null 2>&1; then
+		parental_log "nft command not found"
+		return 1
+	fi
+
+	delete_parental_chain
+	if ! create_parental_chain; then
+		return 1
+	fi
+	parental_log "parental_block chain created"
+
+	config_foreach handle_device device
+}
+
+if [ -f "/etc/config/parental" ]; then
+	config_load parental
+	load_parental_config
+else
+	delete_parental_chain
+fi
