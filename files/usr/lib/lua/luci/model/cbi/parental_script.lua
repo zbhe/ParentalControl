@@ -312,37 +312,33 @@ local function render_compat()
         detail_html[#detail_html + 1] = util.pcdata(line)
     end
 
-    local color, background, title
+    local color, title
     if #warnings == 0 then
-        color, background = "#2b7a3d", "#f0fff4"
+        color = "#2b7a3d"
         title = "兼容性检查通过"
-    elseif critical then
-        color, background = "#b42318", "#fff1f0"
-        title = "检测到严重兼容性问题，规则可能无法生效"
     else
-        color, background = "#a15c00", "#fff8e1"
-        title = "检测到兼容性风险"
+        color = "#b42318"
+        title = "兼容性检查不通过"
     end
 
     local html = {
-        '<div style="margin:0 0 12px;padding:10px 12px;border-left:4px solid '
-            .. color .. ';background:' .. background .. ';border-radius:6px;">',
-        '<div style="font-weight:bold;color:' .. color .. ';">'
-            .. title .. '</div>',
-        '<div style="font-size:12px;color:#444;margin-top:6px;line-height:1.6;">'
+        '<details style="margin:0;padding:0;border:0;background:transparent;">',
+        '<summary style="cursor:pointer;font-weight:bold;color:' .. color
+            .. ';outline:none;">' .. title .. '</summary>',
+        '<div style="font-size:12px;color:inherit;opacity:.8;margin-top:6px;line-height:1.6;">'
             .. table.concat(detail_html, '<br>') .. '</div>'
     }
 
     if #warnings > 0 then
         html[#html + 1] =
-            '<ul style="margin:8px 0 0 18px;padding:0;color:#333;font-size:12px;">'
+            '<ul style="margin:8px 0 0 18px;padding:0;color:inherit;opacity:.85;font-size:12px;">'
         for _, warning in ipairs(warnings) do
             html[#html + 1] = '<li>' .. util.pcdata(warning) .. '</li>'
         end
         html[#html + 1] = '</ul>'
     end
 
-    html[#html + 1] = '</div>'
+    html[#html + 1] = '</details>'
     return table.concat(html)
 end
 
@@ -356,8 +352,13 @@ local compat_ok, compat_html = pcall(render_compat)
 if compat_ok then
     compat_view.value = compat_html
 else
-    compat_view.value = '<div style="padding:10px;color:#b42318;background:#fff1f0;">'
-        .. "兼容性检测失败: " .. util.pcdata(tostring(compat_html)) .. '</div>'
+    compat_view.value =
+        '<details style="margin:0;padding:0;border:0;background:transparent;color:#b42318;">'
+        .. '<summary style="cursor:pointer;font-weight:bold;outline:none;">'
+        .. '兼容性检查不通过</summary>'
+        .. '<div style="margin-top:6px;font-size:12px;line-height:1.6;">'
+        .. "检测失败: " .. util.pcdata(tostring(compat_html))
+        .. '</div></details>'
 end
 
 local enabled = s:option(Flag, "enabled", "启用家长控制系统")
@@ -583,18 +584,169 @@ render_slot_helpers = function()
 <style>
 #parental-slot-helper-root { display: none; }
 input[name$=".timeslots"], textarea[name$=".timeslots"], select[name$=".timeslots"] { display: none !important; }
+#parental-slot-modal {
+    color-scheme: light;
+    --parental-dialog-bg: #fff;
+    --parental-text: #222;
+    --parental-muted: #666;
+    --parental-border: #d0d7de;
+    --parental-row-bg: #fafafa;
+    --parental-input-bg: #fff;
+    --parental-day-bg: #fff;
+    --parental-day-hover: #f3f6fa;
+    --parental-checkbox-border: #6b7280;
+    --parental-checkbox-bg: #fff;
+    --parental-error: #c62828;
+}
+#parental-slot-modal.parental-dark {
+    color-scheme: dark;
+    --parental-dialog-bg: #202329;
+    --parental-text: #f1f3f5;
+    --parental-muted: #aeb5bf;
+    --parental-border: #464d57;
+    --parental-row-bg: #252930;
+    --parental-input-bg: #17191d;
+    --parental-day-bg: #2b3038;
+    --parental-day-hover: #343a44;
+    --parental-checkbox-border: #aeb5bf;
+    --parental-checkbox-bg: #202329;
+    --parental-error: #ff7b72;
+}
+#parental-slot-modal .parental-slot-dialog {
+    background: var(--parental-dialog-bg) !important;
+    color: var(--parental-text) !important;
+    border: 1px solid var(--parental-border);
+    width: min(680px, 92vw);
+    max-height: 88vh;
+    overflow: auto;
+    margin: 5vh auto;
+    padding: 18px;
+    border-radius: 10px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, .35);
+}
+#parental-slot-modal .parental-slot-title {
+    font-size: 16px;
+    font-weight: bold;
+    margin-bottom: 8px;
+}
+#parental-slot-modal .parental-slot-description {
+    font-size: 12px;
+    color: var(--parental-muted);
+    margin-bottom: 12px;
+    line-height: 1.5;
+}
+#parental-slot-modal .parental-slot-row {
+    color: var(--parental-text) !important;
+    border: 1px solid var(--parental-border);
+    border-radius: 6px;
+    padding: 10px;
+    margin-bottom: 8px;
+    background: var(--parental-row-bg);
+}
+#parental-slot-modal .parental-slot-days {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    margin-top: 8px;
+    font-size: 12px;
+    gap: 6px 8px !important;
+}
+#parental-slot-modal .parental-slot-day-label {
+    display: inline-flex !important;
+    align-items: center;
+    gap: 7px;
+    min-height: 32px;
+    padding: 4px 10px;
+    border: 1px solid var(--parental-border);
+    border-radius: 999px;
+    background: var(--parental-day-bg);
+    color: var(--parental-text) !important;
+    font-size: 13px;
+    line-height: 18px;
+    white-space: nowrap;
+    user-select: none;
+    cursor: pointer;
+}
+#parental-slot-modal .parental-slot-day-label:hover {
+    border-color: var(--parental-checkbox-border);
+    background: var(--parental-day-hover);
+}
+#parental-slot-modal .parental-slot-start,
+#parental-slot-modal .parental-slot-stop {
+    color: var(--parental-text) !important;
+    background: var(--parental-input-bg) !important;
+    border: 1px solid var(--parental-border);
+    border-radius: 4px;
+}
+#parental-slot-modal .parental-slot-day {
+    appearance: none !important;
+    -webkit-appearance: none !important;
+    position: relative !important;
+    display: inline-block !important;
+    top: 0 !important;
+    right: auto !important;
+    bottom: auto !important;
+    left: 0 !important;
+    box-sizing: border-box;
+    width: 18px !important;
+    height: 18px !important;
+    min-width: 18px;
+    flex: 0 0 18px;
+    align-self: center !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 2px solid var(--parental-checkbox-border) !important;
+    border-radius: 4px;
+    background: var(--parental-checkbox-bg) !important;
+    opacity: 1 !important;
+    filter: none !important;
+    transform: none !important;
+    zoom: 1 !important;
+    cursor: pointer;
+}
+#parental-slot-modal .parental-slot-day:checked {
+    border-color: #1976d2 !important;
+    background: #1976d2 !important;
+}
+#parental-slot-modal .parental-slot-day:checked::after {
+    content: "";
+    position: absolute;
+    left: 5px;
+    top: 1px;
+    width: 4px;
+    height: 9px;
+    border: solid #fff;
+    border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
+}
+#parental-slot-modal .parental-slot-day-text {
+    display: block;
+    align-self: center !important;
+    height: 18px;
+    line-height: 18px;
+    transform: translateY(1px);
+}
+#parental-slot-modal .parental-slot-day:focus-visible {
+    outline: 2px solid #1976d2;
+    outline-offset: 2px;
+}
+#parental-slot-modal .parental-slot-error {
+    color: var(--parental-error);
+    font-size: 12px;
+    min-height: 18px;
+}
 </style>
 <div id="parental-slot-modal" style="display:none; position:fixed; z-index:10000; left:0; top:0; width:100%; height:100%; background:rgba(0,0,0,.45);">
-    <div style="background:#fff; color:#222; width:min(680px,92vw); max-height:88vh; overflow:auto; margin:5vh auto; padding:18px; border-radius:10px; box-shadow:0 10px 40px rgba(0,0,0,.35);">
-        <div style="font-size:16px; font-weight:bold; margin-bottom:8px;">管理管控时段</div>
-        <div style="font-size:12px; color:#666; margin-bottom:12px; line-height:1.5;">
+    <div class="parental-slot-dialog">
+        <div class="parental-slot-title">管理管控时段</div>
+        <div class="parental-slot-description">
             每个时段独立设置生效星期。结束时间早于开始时间时按跨午夜处理；点击“确定”后，还需要点击页面底部的“保存并应用”。
         </div>
         <div id="parental-slot-rows"></div>
         <div style="margin:10px 0 6px;">
             <button type="button" class="cbi-button" onclick="parentalAddSlotRow()">+ 添加时段</button>
         </div>
-        <div id="parental-slot-error" style="color:#c00; font-size:12px; min-height:18px;"></div>
+        <div id="parental-slot-error" class="parental-slot-error"></div>
         <div style="text-align:right; margin-top:8px;">
             <button type="button" class="cbi-button" onclick="parentalCloseSlots(false)">取消</button>
             <button type="button" class="cbi-button cbi-button-apply" onclick="parentalCloseSlots(true)">确定</button>
@@ -675,17 +827,78 @@ input[name$=".timeslots"], textarea[name$=".timeslots"], select[name$=".timeslot
         return document.getElementById('parental-slot-rows');
     }
 
+    function isDarkTheme() {
+        var root = document.documentElement;
+        var body = document.body;
+        var className = [
+            root && root.className,
+            body && body.className
+        ].join(' ');
+        var dataTheme = [
+            root && root.getAttribute('data-theme'),
+            body && body.getAttribute('data-theme'),
+            root && root.getAttribute('data-bs-theme'),
+            body && body.getAttribute('data-bs-theme')
+        ].join(' ').toLowerCase();
+
+        if (/(^|\s)(dark|theme-dark)(\s|$)/i.test(className)
+            || /dark|night/.test(dataTheme)) {
+            return true;
+        }
+        if (/(^|\s)(light|theme-light)(\s|$)/i.test(className)
+            || /light|day/.test(dataTheme)) {
+            return false;
+        }
+
+        var background = body
+            ? window.getComputedStyle(body).backgroundColor
+            : '';
+        if (!background || background === 'transparent'
+            || /rgba\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*0(?:\.0+)?\s*\)/.test(background)) {
+            background = root
+                ? window.getComputedStyle(root).backgroundColor
+                : '';
+        }
+
+        var rgb = background && background.match(
+            /rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/
+        );
+        if (rgb) {
+            var brightness = (
+                parseInt(rgb[1], 10)
+                + parseInt(rgb[2], 10)
+                + parseInt(rgb[3], 10)
+            ) / 3;
+            return brightness < 128;
+        }
+
+        return !!(window.matchMedia
+            && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    }
+
+    window.parentalSyncTheme = function() {
+        var modal = document.getElementById('parental-slot-modal');
+        if (!modal) {
+            return;
+        }
+
+        if (isDarkTheme()) {
+            modal.classList.add('parental-dark');
+        } else {
+            modal.classList.remove('parental-dark');
+        }
+    };
+
     window.parentalAddSlotRow = function(slot) {
         var row = document.createElement('div');
         row.className = 'parental-slot-row';
-        row.style.cssText = 'border:1px solid #ddd;border-radius:6px;padding:10px;margin-bottom:8px;background:#fafafa;';
         row.innerHTML =
             '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">' +
                 '<label style="font-size:12px;">开始 <input type="time" class="parental-slot-start" step="60" style="padding:2px;"></label>' +
                 '<label style="font-size:12px;">结束 <input type="time" class="parental-slot-stop" step="60" style="padding:2px;"></label>' +
                 '<button type="button" class="cbi-button" style="margin-left:auto;padding:2px 8px;font-size:11px;">删除</button>' +
             '</div>' +
-            '<div class="parental-slot-days" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;font-size:12px;"></div>';
+            '<div class="parental-slot-days"></div>';
 
         var current = slot || { start: '', stop: '', days: allDays() };
         var selectedDays = current.days || allDays();
@@ -695,14 +908,17 @@ input[name$=".timeslots"], textarea[name$=".timeslots"], select[name$=".timeslot
         var daysBox = row.querySelector('.parental-slot-days');
         DAYS.forEach(function(day) {
             var label = document.createElement('label');
-            label.style.cssText = 'cursor:pointer;';
+            label.className = 'parental-slot-day-label';
             var checkbox = document.createElement('input');
             checkbox.type = 'checkbox';
             checkbox.className = 'parental-slot-day';
             checkbox.value = day;
             checkbox.checked = selectedDays.indexOf(day) !== -1;
             label.appendChild(checkbox);
-            label.appendChild(document.createTextNode(' ' + DAY_LABELS[day]));
+            var text = document.createElement('span');
+            text.className = 'parental-slot-day-text';
+            text.textContent = DAY_LABELS[day];
+            label.appendChild(text);
             daysBox.appendChild(label);
         });
 
@@ -752,6 +968,7 @@ input[name$=".timeslots"], textarea[name$=".timeslots"], select[name$=".timeslot
         var input = slotInput(section);
         var slots = parseSlots(input ? input.value : '');
         var container = slotRows();
+        window.parentalSyncTheme();
         container.innerHTML = '';
 
         if (slots.length === 0) {
@@ -829,6 +1046,7 @@ input[name$=".timeslots"], textarea[name$=".timeslots"], select[name$=".timeslot
     }
 
     window.parentalHideInternalFields();
+    window.parentalSyncTheme();
     window.addEventListener('load', window.parentalHideInternalFields);
     document.addEventListener('DOMContentLoaded', window.parentalHideInternalFields);
     setTimeout(window.parentalHideInternalFields, 0);
@@ -837,6 +1055,22 @@ input[name$=".timeslots"], textarea[name$=".timeslots"], select[name$=".timeslot
         new MutationObserver(window.parentalHideInternalFields).observe(
             document.body, { childList: true, subtree: true }
         );
+
+        var themeObserver = new MutationObserver(window.parentalSyncTheme);
+        var themeObserverOptions = {
+            attributes: true,
+            attributeFilter: ['class', 'data-theme', 'data-bs-theme', 'style']
+        };
+        themeObserver.observe(document.documentElement, themeObserverOptions);
+        themeObserver.observe(document.body, themeObserverOptions);
+    }
+    if (window.matchMedia) {
+        var colorScheme = window.matchMedia('(prefers-color-scheme: dark)');
+        if (colorScheme.addEventListener) {
+            colorScheme.addEventListener('change', window.parentalSyncTheme);
+        } else if (colorScheme.addListener) {
+            colorScheme.addListener(window.parentalSyncTheme);
+        }
     }
 })();
 </script>

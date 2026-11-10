@@ -70,7 +70,12 @@ tar --owner=0 --group=0 --numeric-owner \
 
 (
 	cd "$WORK_DIR"
-	ar rcs "$OUT_FILE" debian-binary control.tar.gz data.tar.gz
+	if command -v bsdtar >/dev/null 2>&1; then
+		bsdtar --format ar -cf "$OUT_FILE" \
+			debian-binary control.tar.gz data.tar.gz
+	else
+		ar rcs "$OUT_FILE" debian-binary control.tar.gz data.tar.gz
+	fi
 )
 
 printf 'Built: %s\n' "$OUT_FILE"

@@ -2,18 +2,21 @@
 
 ## 审查范围
 
-本次审查基于 `files/` 下的四个运行文件：
+本次审查基于以下运行文件和打包文件：
 
 - `files/usr/lib/lua/luci/controller/parental.lua`
 - `files/usr/lib/lua/luci/model/cbi/parental_script.lua`
 - `files/etc/config/parental`
 - `files/etc/config/firewall.parental`
+- `Makefile`
+- `scripts/build-ipk.sh`
 
 已完成：
 
 - Shell 语法检查通过。
 - 两个 Lua 文件分别通过 Lua 语法解析。
 - 弹窗 JavaScript 通过 Node 语法检查。
+- 使用本机无头 Chrome 验证了日期选项对齐和浅色/深色主题渲染。
 - 使用模拟的 UCI/nft 命令验证了多时段、旧配置兼容和跨午夜规则生成。
 
 未完成：
@@ -26,11 +29,16 @@
 
 | ID | 级别 | 状态 | 问题 |
 | --- | --- | --- | --- |
+| P0-01 | 高 | 确认 | 当前规则同时阻断经过路由器的内网和外网流量，不符合“只禁外网”的目标 |
+| P0-02 | 高 | 待验证 | Passwall TRANSPARENT/TUN 改写可能早于家长控制规则，导致外网流量绕过 |
+| P0-03 | 高 | 待实现 | 允许内网后，受控设备可直连 Passwall 显式代理端口绕过限制 |
 | P1-01 | 高 | 确认 | 已配置但当前不在 DHCP/ARP 中的设备无法正常从 UI 选择，存在配置丢失风险 |
 | P1-02 | 高 | 确认 | 防火墙重载或 nftables 命令失败时，页面仍可能表现为保存成功 |
 | P1-03 | 高 | 待验证 | 动态时段依赖隐藏的 `timeslots` 字段，需确认 CBI 提交和旧配置迁移行为 |
+| P1-04 | 高 | 待验证 | flow offload 可能让管控开始前建立的连接继续运行 |
+| P1-05 | 高 | 确认 | OpenWrt 23.05+ 缺少 `luci-compat`/`luci-lua-runtime` 依赖，页面可能无法加载 |
 | P2-01 | 中 | 待验证 | 时段编辑完全依赖内联 JavaScript，主题、动态新增行和无 JS 环境需要实测 |
-| P2-02 | 中 | 待验证 | 跨午夜规则使用 `23:59` 作为分段边界，需要确认 nftables 的结束时间语义 |
+| P2-02 | 中 | 待验证 | 跨午夜规则使用 `23:59` 分段，且 `23:59 -> 00:00` 会生成零长度规则 |
 | P2-03 | 中 | 确认 | `timeslots` 为空时会回退旧字段，手工编辑时可能意外恢复旧时段 |
 | P2-04 | 中 | 确认 | 序列化字符串是内部格式，手工查看和编辑不友好 |
 | P2-05 | 低 | 确认 | “在线”状态只依据 ARP 表，可能是过期数据 |
@@ -50,13 +58,131 @@
   `stop_time_pm`、`weekdays` 仍可读取。
 - 全局关闭时删除规则链；没有有效规则时保留空链，便于诊断。
 - 显式加载 `nixio` 和 `luci.util`，并收紧了 CBI 控件变量作用域。
+- 时段弹窗的日期选项改为独立胶囊布局，修复复选框和文字对齐问题。
+- 时段弹窗会跟随 LuCI 浅色/深色主题切换。
+- 系统兼容性改为默认收起，只显示通过/不通过状态，展开后查看详细信息。
+
+## P0-01：当前规则无法实现“允许内网、禁止外网”
+
+**位置**
+
+- 规则链创建：`files/etc/config/firewall.parental` 中的
+  `create_parental_chain()`
+- 规则生成：`files/etc/config/firewall.parental` 中的 `add_rule()`
+
+**现象**
+
+当前 `parental_block` 链挂在 `inet fw4` 的 `prerouting` hook。
+命中受控 MAC、时间和星期后直接执行 `drop`，规则没有判断目标属于内网还是外网。
+
+**影响**
+
+- 受控设备无法访问路由器管理页、DHCP 和 DNS。
+- 经过路由器转发的跨 VLAN、跨网段内网流量也会被阻断。
+- 同一二层网桥内的直接通信不经过该 hook，仍然可以访问。
+
+**建议**
+
+- 明确区分“当前行为”和“目标行为”，在实现前不要把允许内网写成已完成。
+- 目标规则只阻断外网目标，不阻断路由器本机和允许的内网网段。
+- 必须同时覆盖 IPv4 和 IPv6。
+
+## P0-02：Passwall 的透明代理和 TUN 模式可能改变匹配结果
+
+**现象**
+
+Passwall 可能通过 REDIRECT、TPROXY 或 TUN 在 `prerouting` 阶段改写流量：
+
+- REDIRECT/TPROXY 可能把公网目标改成路由器本地代理端口。
+- TUN 模式可能把流量转发到虚拟接口。
+- 真正连接代理服务器的是路由器本机进程，源 MAC 已不再属于受控设备。
+
+因此，只把规则移动到 `forward` 链并匹配 WAN 输出接口，无法保证拦截这些流量。
+当前全量 `prerouting drop` 是否能拦住 Passwall，取决于家长控制链和 Passwall
+规则的实际执行顺序，尚未在目标机验证。
+
+**建议**
+
+- 保留按 MAC、时间和星期识别的能力，但改为在 Passwall 改写前判断原始目标。
+- 生成明确的路由器本机与内网允许集合，外网目标在代理分流前丢弃。
+- 检查完整 `nft list ruleset`，确认家长控制规则早于 Passwall 的
+  REDIRECT/TPROXY/TUN 分流。
+- 不要将 WAN 接口名写死为 `wan`，需兼容 PPPoE、多 WAN、VPN 和 IPv6。
+
+## P0-03：显式代理端口可形成绕过路径
+
+**现象**
+
+如果客户端的 HTTP/SOCKS 代理直接配置为路由器内网地址和 Passwall 端口：
+
+```text
+受控设备 -> 路由器内网 IP:Passwall 端口 -> 外网
+```
+
+目标规则如果使用“内网目标均允许”的策略，会把这条连接视为内网访问。
+
+**影响**
+
+- 受控设备可在管控时段继续通过显式代理访问外网。
+- 仅限制 WAN 转发出口无法解决该问题。
+
+**建议**
+
+- 在管控时段禁止受控 MAC 访问 Passwall 的 HTTP/SOCKS 监听端口。
+- 或者使用 Passwall 自身访问控制，并确保其状态能与家长控制时段同步。
+- 允许内网代理、NAS 代理等设备时，需要评估它们能否替受控设备访问外网。
+
+## P1-04：flow offload 可能保留管控前的连接
+
+**现象**
+
+受控设备在管控时段开始前建立的连接可能已经进入软件或硬件 flowtable。
+后续报文可能不再逐包经过 `parental_block` 链，连接会持续到流过期。
+
+**影响**
+
+即使静态 nftables 规则正确，视频、游戏或下载连接也可能在管控开始后继续。
+
+**建议**
+
+- 在目标机分别关闭和开启 flow offload 验证。
+- 如需保证时段边界立即生效，应清理相关 conntrack/flow，或明确要求关闭相关
+  流卸载功能。
+
+## P1-05：OpenWrt 23.05+ 缺少 LuCI Lua 兼容依赖
+
+**位置**
+
+- `Makefile` 中的 `DEPENDS`
+- `scripts/build-ipk.sh` 生成的 `Depends` 字段
+
+**现象**
+
+插件使用旧式 Lua Controller/CBI。OpenWrt 22.03 的 `luci-base` 自带 Lua
+运行时，但 23.05 及更新版本改为 ucode，旧式 CBI 由 `luci-compat` 提供，
+并进一步依赖 `luci-lua-runtime`。
+
+当前 Makefile 和直接生成的 ipk 都只声明 `luci-base`、`firewall4` 和
+`nftables`，没有声明兼容运行时。
+
+**影响**
+
+- 包可能可以安装，但页面的 Controller/CBI 无法正常加载。
+- `require "nixio"` 或旧式 CBI 模板可能加载失败。
+
+**建议**
+
+- 明确目标 OpenWrt 版本范围。
+- 对 23.05 及更新版本显式声明 `luci-compat` 或对应 Lua 运行时依赖。
+- 在目标版本上验证菜单加载、页面提交和 `nixio` 可用性。
 
 ## P1-01：离线设备无法从 UI 正常添加或保留
 
 **位置**
 
-- 设备发现：`files/usr/lib/lua/luci/model/cbi/parental_script.lua:366`
-- MAC 下拉选项：`files/usr/lib/lua/luci/model/cbi/parental_script.lua:450`
+- 设备发现：`parental_script.lua` 中读取 `/tmp/dhcp.leases` 和
+  `/proc/net/arp` 的逻辑
+- MAC 下拉选项：`parental_script.lua` 中的 `mac_option`
 
 **现象**
 
@@ -81,9 +207,9 @@
 
 **位置**
 
-- 重载命令：`files/usr/lib/lua/luci/model/cbi/parental_script.lua:850`
-- 链创建：`files/etc/config/firewall.parental:28`
-- 规则追加：`files/etc/config/firewall.parental:84`
+- 重载命令：`parental_script.lua` 中的 `m.on_after_commit()`
+- 链创建：`firewall.parental` 中的 `create_parental_chain()`
+- 规则追加：`firewall.parental` 中的 `add_rule()`
 
 **现象**
 
@@ -109,8 +235,8 @@
 
 **位置**
 
-- 隐藏字段：`files/usr/lib/lua/luci/model/cbi/parental_script.lua:513`
-- 弹窗写回：`files/usr/lib/lua/luci/model/cbi/parental_script.lua:778`
+- 隐藏字段：`parental_script.lua` 中的 `slots_value`
+- 弹窗写回：`parental_script.lua` 中的 `parentalCloseSlots()`
 
 **现象**
 
@@ -138,7 +264,7 @@
 
 **位置**
 
-- 弹窗和脚本：`files/usr/lib/lua/luci/model/cbi/parental_script.lua:580`
+- 弹窗和脚本：`parental_script.lua` 中的 `render_slot_helpers`
 
 **现象**
 
@@ -160,7 +286,7 @@
 
 **位置**
 
-- 跨午夜拆分：`files/etc/config/firewall.parental:154`
+- 跨午夜拆分：`firewall.parental` 中的 `add_slot()`
 
 **现象**
 
@@ -174,6 +300,10 @@
 这里使用 `23:59` 作为当天结束边界。需要确认目标 nftables 是否把
 `22:00-23:59` 解释为覆盖 23:59 这一分钟，否则可能留下一个极短的时间缺口。
 
+此外，用户配置 `23:59 -> 00:00` 时当前算法会拆成
+`23:59-23:59` 和 `00:00-00:00`。两者在逻辑上应覆盖一分钟，但实际生成了
+零长度时间范围，可能失败或完全不生效。
+
 **建议**
 
 在目标机用 `22:00-06:00` 规则实际测试 23:59:30 和 00:00:10 两个时间点。
@@ -182,8 +312,8 @@
 
 **位置**
 
-- 回退逻辑：`files/etc/config/firewall.parental:201`
-- Lua 回退逻辑：`files/usr/lib/lua/luci/model/cbi/parental_script.lua:151`
+- 回退逻辑：`firewall.parental` 中的 `handle_device()`
+- Lua 回退逻辑：`parental_script.lua` 中的 `get_slots()`
 
 **现象**
 
@@ -224,7 +354,7 @@ option timeslots '08:00|11:50|Saturday Sunday;14:00|22:00|Saturday Sunday'
 
 **位置**
 
-- `files/usr/lib/lua/luci/model/cbi/parental_script.lua:434`
+- `parental_script.lua` 中的在线状态 `cfgvalue`
 
 **现象**
 
@@ -255,7 +385,7 @@ option timeslots '08:00|11:50|Saturday Sunday;14:00|22:00|Saturday Sunday'
 - `sh -n files/etc/config/firewall.parental` 通过。
 - `luac -p` 检查两个 Lua 文件通过。
 - 弹窗 JavaScript 通过 `node --check`。
-- `scripts/build-ipk.sh` 已生成并校验
+- `scripts/build-ipk.sh` 使用 `bsdtar --format ar` 生成了有效的
   `dist/luci-app-parental_1.0.0-1_all.ipk`。
 - 模拟 nft 命令验证：
   - 多时段会生成多条规则。
@@ -274,3 +404,9 @@ option timeslots '08:00|11:50|Saturday Sunday;14:00|22:00|Saturday Sunday'
 6. 设置 `22:00-06:00`，在 22:30、23:59、00:00、05:30 分别测试。
 7. 禁用全局开关，确认 `parental_block` 被删除。
 8. 重启防火墙并重复 reload，确认没有重复规则。
+9. 在管控时段验证受控设备仍可访问路由器管理页、DHCP、DNS 和跨 VLAN 内网资源。
+10. 使用 Passwall REDIRECT/TPROXY 模式验证外网目标在代理改写前被阻断。
+11. 使用 Passwall TUN 模式验证外网目标不会被虚拟接口绕过。
+12. 将受控设备显式配置为 Passwall HTTP/SOCKS 代理，确认管控时段无法使用。
+13. 对比关闭和开启 flow offload 时，管控前已建立连接是否仍可继续。
+14. 执行 `nft list ruleset`，记录家长控制链与 Passwall 链的实际先后顺序。
